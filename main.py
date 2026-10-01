@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
+from datetime import datetime, timezone
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -37,6 +38,17 @@ def load_seen():
 def mark_seen(slug):
     supabase.table("new_series").upsert({"slug": slug}).execute()
 
+def record_status(result=None, error=None):
+    try:
+        supabase.table("bot_status").upsert({
+            "id": 1,
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "last_result": result,
+            "last_error": error,
+            "site_ok": error is None,
+        }).execute()
+    except Exception as e:
+        print("Could not record status:", e)
 
 # ---------- Scraping ----------
 def get_soup(url):
@@ -204,3 +216,11 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(body.encode())
+
+        try:
+            body, code = run(), 200
+            record_status(result=body)                  # NEW
+        except Exception as e:
+            print("Run failed:", e)
+            body, code = f"error: {e}", 500
+            record_status(error=str(e)[:300])           # NEW
