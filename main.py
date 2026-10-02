@@ -209,18 +209,12 @@ class handler(BaseHTTPRequestHandler):
             return
         try:
             body, code = run(), 200
+            record_status(result=body)
         except Exception as e:
             print("Run failed:", e)
             body, code = f"error: {e}", 500
+            record_status(error=str(e)[:300])
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(body.encode())
-
-        try:
-            body, code = run(), 200
-            record_status(result=body)                  # NEW
-        except Exception as e:
-            print("Run failed:", e)
-            body, code = f"error: {e}", 500
-            record_status(error=str(e)[:300])           # NEW
