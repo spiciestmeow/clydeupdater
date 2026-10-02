@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/cron.py": {
+    "api/main.py": {
       "maxDuration": 60
     }
   }
