@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -32,8 +33,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # optional
 LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Manila
-STALE_AFTER_MIN = 35  # cron runs every 15 min; allow some slack
-FAIL_ALERT_AFTER = 3  # failed runs in a row before you get a Telegram alert
+STALE_AFTER_MIN = 15  # cron runs every 5 min; allow some slack
+FAIL_ALERT_AFTER = 6  # 6 failed runs in a row = about 30 minutes
 
 # ---------- Supabase ----------
 def load_seen():
@@ -298,7 +299,7 @@ def check_site():
     """Live check of the manga site. Returns (ok, detail)."""
     try:
         t = time.time()
-        r = requests.get(BASE + "/", headers=HEADERS, timeout=10)
+        r = requests.get(BASE + "/", headers=HEADERS, timeout=5)
         ms = int((time.time() - t) * 1000)
         if r.ok:
             return True, f"online ({r.status_code}, {ms} ms)"
@@ -319,21 +320,28 @@ def ago(dt):
 
 
 def status_text():
-    site_ok, site_detail = check_site()
+    def read_row():
+        try:
+            res = supabase.table("bot_status").select("*").eq("id", 1).execute()
+            return res.data[0] if res.data else None
+        except Exception as e:
+            print("status read failed:", e)
+            return None
 
-    row = None
-    try:
-        res = supabase.table("bot_status").select("*").eq("id", 1).execute()
-        row = res.data[0] if res.data else None
-    except Exception as e:
-        print("status read failed:", e)
+    def count_tracked():
+        try:
+            res = supabase.table("new_series").select("slug", count="exact").limit(1).execute()
+            return res.count if res.count is not None else len(res.data)
+        except Exception:
+            return "?"
 
-    tracked = "?"
-    try:
-        res = supabase.table("new_series").select("slug", count="exact").limit(1).execute()
-        tracked = res.count if res.count is not None else len(res.data)
-    except Exception:
-        pass
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_site = ex.submit(check_site)
+        f_row = ex.submit(read_row)
+        f_cnt = ex.submit(count_tracked)
+        site_ok, site_detail = f_site.result()
+        row = f_row.result()
+        tracked = f_cnt.result()
 
     lines = ["<b>Bot status</b>", ""]
     lines.append(f"{'🟢' if site_ok else '🔴'} Website: {html.escape(site_detail)}")
