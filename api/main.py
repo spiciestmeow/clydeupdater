@@ -4,7 +4,7 @@ import os
 import re
 import time
 from http.server import BaseHTTPRequestHandler
-
+from difflib import SequenceMatcher
 import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
@@ -41,8 +41,29 @@ def load_seen():
     return {row["slug"] for row in res.data}
 
 
-def mark_seen(slug):
-    supabase.table("new_series").upsert({"slug": slug}).execute()
+def mark_seen(slug, d=None):
+    row = {"slug": slug}
+    if d:  # remember the cover + synopsis so renamed copies can be recognised
+        row["image"] = d["image"]
+        row["synopsis"] = d["synopsis"]
+    supabase.table("new_series").upsert(row).execute()
+
+
+def _norm(s):
+    return re.sub(r"\W+", " ", (s or "").lower()).strip()
+
+
+def is_duplicate(d):
+    """True if this series was already sent under a different slug/title."""
+    res = supabase.table("new_series").select("slug,image,synopsis").execute()
+    syn = _norm(d["synopsis"])
+    for row in res.data:
+        if d["image"] and row.get("image") == d["image"]:
+            return True
+        old = _norm(row.get("synopsis"))
+        if len(syn) > 40 and len(old) > 40 and SequenceMatcher(None, syn, old).ratio() >= 0.85:
+            return True
+    return False
 
 def record_status(result=None, error=None):
     try:
@@ -196,11 +217,16 @@ def run():
         if sent >= MAX_PER_RUN:
             break
         try:
-            send(get_details(slug))
+            d = get_details(slug)
+            if is_duplicate(d):  # same series, renamed -> remember slug, don't resend
+                print(f"Skipping duplicate: {slug}")
+                mark_seen(slug, d)
+                continue
+            send(d)
         except Exception as e:
             print(f"Failed to send {slug}: {e}")
             continue  # not marked as seen -> retried next run
-        mark_seen(slug)
+        mark_seen(slug, d)
         sent += 1
 
     return f"ok: sent={sent}, first_run={first_run}, carousel={len(slugs)}"
