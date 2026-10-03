@@ -33,7 +33,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # optional
 LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Manila
 STALE_AFTER_MIN = 35  # cron runs every 15 min; allow some slack
-
+FAIL_ALERT_AFTER = 3  # failed runs in a row before you get a Telegram alert
 
 # ---------- Supabase ----------
 def load_seen():
@@ -66,13 +66,35 @@ def is_duplicate(d):
     return False
 
 def record_status(result=None, error=None):
+    """Save the run outcome and send a Telegram alert after repeated failures."""
     try:
+        res = supabase.table("bot_status").select("fail_count,alerted").eq("id", 1).execute()
+        prev = res.data[0] if res.data else {}
+        fails = prev.get("fail_count") or 0
+        alerted = bool(prev.get("alerted"))
+
+        if error:
+            fails += 1
+            if fails >= FAIL_ALERT_AFTER and not alerted:
+                tg_reply(
+                    CHAT_ID,
+                    f"⚠️ <b>Bot problem</b>\n{fails} failed runs in a row.\n"
+                    f"Last error: {html.escape(error[:200])}",
+                )
+                alerted = True
+        else:
+            if alerted:
+                tg_reply(CHAT_ID, "✅ <b>Bot recovered</b>, runs are working again.")
+            fails, alerted = 0, False
+
         supabase.table("bot_status").upsert({
             "id": 1,
             "last_run_at": datetime.now(timezone.utc).isoformat(),
             "last_result": result,
             "last_error": error,
             "site_ok": error is None,
+            "fail_count": fails,
+            "alerted": alerted,
         }).execute()
     except Exception as e:
         print("Could not record status:", e)
@@ -341,7 +363,10 @@ class handler(BaseHTTPRequestHandler):
             return self._send(401, b"unauthorized")
         try:
             body, code = run(), 200
-            record_status(result=body)
+            if body.startswith("ok"):
+                record_status(result=body)
+            else:  # e.g. "no 'New Series' items found" = site layout changed
+                record_status(error=body)
         except Exception as e:
             print("Run failed:", e)
             body, code = f"error: {e}", 500
