@@ -127,6 +127,23 @@ def get_new_series():
                 slugs.append(m.group(1))
     return slugs
 
+def get_alt_name(soup, title):
+    """Alternative name = the first line of text right after the <h1> title."""
+    h1 = soup.find("h1")
+    if not h1:
+        return ""
+    el = h1.find_next(lambda t: t.name and not t.find(True) and t.get_text(strip=True))
+    t = el.get_text(" ", strip=True) if el else ""
+    if (
+        not t
+        or len(t) > 150
+        or t.lower() == (title or "").lower()
+        or re.fullmatch(r"[\d.]+", t)          # a rating like "5.0"
+        or "rating" in t.lower()
+        or t.lower() == "synopsis"
+    ):
+        return ""
+    return t
 
 def get_details(slug):
     url = f"{BASE}/series/{slug}"
@@ -170,6 +187,7 @@ def get_details(slug):
     mtype = link_texts("browse?type=")
     return {
         "title": title,
+        "alt": get_alt_name(soup, title),
         "url": url,
         "image": meta("og:image"),
         "synopsis": synopsis,
@@ -184,37 +202,50 @@ def get_details(slug):
 def build_caption(d):
     esc = html.escape
     head = f"<b>{esc(d['title'])}</b>\n"
-    info = f"🆕 New series\n📖 Chapters: {d['chapters']}\n📌 Status: {esc(d['status'])}\n"
+    info = (
+        "🆕 New series\n"
+        f"📖 <b>Chapters:</b> {d['chapters']}\n"
+        f"📌 <b>Status:</b> {esc(d['status'])}\n"
+    )
     if d["type"]:
-        info += f"📚 Type: {esc(d['type'])}\n"
+        info += f"📚 <b>Type:</b> {esc(d['type'])}\n"
     if d["genres"]:
-        info += f"🏷 Genres: {esc(', '.join(d['genres']))}\n"
-    tail = f'\n<a href="{d["url"]}">Read now</a>'
+        info += f"🏷 <b>Genres:</b> {esc(', '.join(d['genres']))}\n"
+    if d.get("alt"):
+        info += f"🔤 <b>Alternative name:</b> {esc(d['alt'])}\n"
+    info += "🌐 <b>Source:</b> QIMANGA\n"
 
-    room = 1024 - len(head) - len(info) - len(tail) - 4
+    room = 1024 - len(head) - len(info) - 4
     syn = d["synopsis"]
     while syn and len(html.escape(syn)) > room:
         syn = syn[: max(0, len(syn) - 25)].rstrip() + "…"
         if len(syn) < 30:
             syn = ""
             break
-    body = f"\n{esc(syn)}\n" if syn else ""
-    return head + info + body + tail
+    body = f"\n{esc(syn)}" if syn else ""
+    return head + info + body
 
 
 def send(d):
     caption = build_caption(d)
+    markup = json.dumps({"inline_keyboard": [[{"text": "📖 Read now", "url": d["url"]}]]})
     r = None
     if d["image"]:
         r = requests.post(
             TG + "sendPhoto",
-            data={"chat_id": CHAT_ID, "photo": d["image"], "caption": caption, "parse_mode": "HTML"},
+            data={
+                "chat_id": CHAT_ID, "photo": d["image"], "caption": caption,
+                "parse_mode": "HTML", "reply_markup": markup,
+            },
             timeout=15,
         )
     if r is None or not r.ok:
         r = requests.post(
             TG + "sendMessage",
-            data={"chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML"},
+            data={
+                "chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
+                "reply_markup": markup, "disable_web_page_preview": True,
+            },
             timeout=15,
         )
     r.raise_for_status()
